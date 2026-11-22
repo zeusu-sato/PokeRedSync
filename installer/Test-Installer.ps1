@@ -51,9 +51,12 @@ if (Test-Path -LiteralPath $testKey) { throw "Test key already exists: $testKey"
 
 $before = Get-RealState
 try {
+    New-Item -Path $testKey | Out-Null
+    New-ItemProperty -LiteralPath $testKey -Name 'UpdateFailedTag' -Value 'v2026.1122c' | Out-Null
     $process = Start-Process -FilePath ([IO.Path]::GetFullPath($Setup)) -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$app`"", "/POKEREDSYNCTEST=`"$scratchPath`"", "/LOG=`"$(Join-Path $scratchPath 'install.log')`"") -Wait -PassThru
     Check ($process.ExitCode -eq 0) "install exit code $($process.ExitCode)"
 
+    Check (-not (Get-ItemProperty -LiteralPath $testKey -Name 'UpdateFailedTag' -ErrorAction SilentlyContinue)) 'test UpdateFailedTag removed'
     [string[]]$names = @(Get-ChildItem -LiteralPath $app -File | ForEach-Object { $_.Name })
     [Array]::Sort($names, [StringComparer]::Ordinal)
     Check (($names -join ',') -ceq 'LICENSE,PokeRedSync.exe,installer-test.txt,unins000.dat,unins000.exe') "installed files: $($names -join ',')"

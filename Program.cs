@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using PokeRedSync;
 using PokeRedSync.Update;
 using System.Reflection;
@@ -78,13 +78,17 @@ internal static class Program
             for (int i = 0; i < args.Length; i++) { if (args[i] == "--once") once = true; else if (args[i] == "--root" && i + 1 < args.Length) root = args[++i]; else if (args[i] == "--log" && i + 1 < args.Length) log = args[++i]; else throw new ArgumentException("Invalid arguments; use --help."); }
             root ??= DefaultRoot();
             if (once) return Run(root) ? 0 : 1;
-            var mutex = new Mutex(true, @"Local\PokeRedSync.Tray", out bool created);
-            if (!created) { mutex.Dispose(); return 0; }
+            var mutex = new TrayLock(@"Local\PokeRedSync.Tray");
+            if (!mutex.TryAcquire(UpdateHandover.ReadUpdatedFrom() is not null ? TimeSpan.FromSeconds(30) : TimeSpan.Zero)) { mutex.Dispose(); Log("既に起動しているため終了します"); return 0; }
             bool ownsMutex = true;
             try
             {
             ApplicationConfiguration.Initialize();
-            using var menu = new ContextMenuStrip(); using var icon = new NotifyIcon { Icon = SystemIcons.Application, Text = "PokeRed Sync", ContextMenuStrip = menu, Visible = true };
+            string? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            string displayName = AppVersion.DisplayName(version);
+            using var menu = new ContextMenuStrip(); using var icon = new NotifyIcon { Icon = SystemIcons.Application, Text = displayName, ContextMenuStrip = menu, Visible = true };
+            menu.Items.Add(new ToolStripMenuItem(displayName) { Enabled = false });
+            menu.Items.Add(new ToolStripSeparator());
             using var timer = new System.Windows.Forms.Timer { Interval = 3000 };
             using var watcher = new FileSystemWatcher(root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.DirectoryName | NotifyFilters.Size };
             using var key = Registry.CurrentUser.CreateSubKey(@"Software\PokeRedSync");
@@ -116,7 +120,7 @@ internal static class Program
                         watcher.EnableRaisingEvents = true; menu.Enabled = true; if (timerWasEnabled) timer.Start();
                         completion.TrySetResult(false); return;
                     }
-                    handingOver = true; icon.Visible = false; mutex.ReleaseMutex(); mutex.Dispose(); ownsMutex = false;
+                    handingOver = true; icon.Visible = false; mutex.Dispose(); ownsMutex = false;
                     bool result = await Task.Run(() => new UpdateHandover().Run(AppContext.BaseDirectory, staged, currentTag!, Log));
                     completion.TrySetResult(result); Application.ExitThread();
                 }, null);
@@ -142,7 +146,6 @@ internal static class Program
                         return answer;
                     }
                     var result = await Task.Run(() => UpdateCheck.RunAsync(currentTag, new UpdateFetcher(), Confirm, TryInstall, Log, shutdown.Token));
-                    string? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
                     string? message = UpdateCheck.Message(result, version);
                     if (!handingOver && message is not null) icon.ShowBalloonTip(3000, "PokeRedSync", message, ToolTipIcon.Info);
                 }
@@ -159,16 +162,16 @@ internal static class Program
                 if (UpdateHandover.ReadUpdatedFrom() is not null)
                 {
                     UpdateHandover.ClearUpdatedFrom();
-                    string? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
                     icon.ShowBalloonTip(3000, "PokeRedSync", $"PokeRedSync {version} に更新しました", ToolTipIcon.Info);
                 }
             }
             catch (Exception ex) { Log($"更新の通知: {ex.Message}"); }
             StartUpdates(); timer.Start(); Application.Run(); shutdown.Cancel(); updateStop?.Cancel(); icon.Visible = false; return 0;
             }
-            finally { if (ownsMutex) { mutex.ReleaseMutex(); mutex.Dispose(); } }
+            finally { if (ownsMutex) { mutex.Dispose(); } }
         }
         catch (Exception e) { Log(e.ToString()); Console.Error.WriteLine(e.Message); return 1; }
     }
 }
+
 

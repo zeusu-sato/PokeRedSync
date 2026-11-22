@@ -39,7 +39,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=PokeRedSync-Setup-{#Tag}
 UninstallDisplayIcon={app}\PokeRedSync.exe
-UninstallDisplayName=PokeRedSync
+UninstallDisplayName=PokeRedSync {#Version}
 CreateUninstallRegKey=not IsTestMode
 Compression=lzma2/max
 SolidCompression=yes
@@ -81,6 +81,8 @@ Type: files; Name: "{app}\installer-test.txt"
 
 [Code]
 const
+  SettingsKey = 'Software\PokeRedSync';
+  TestSettingsKey = 'Software\PokeRedSync-InstallerTest';
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   TestRunKey = 'Software\PokeRedSync-InstallerTest\Run';
   TestMarker = 'installer-test.txt';
@@ -148,7 +150,12 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then RegisterStartup;
+  if CurStep = ssPostInstall then
+  begin
+    RegisterStartup;
+    if IsTestMode then RegDeleteValue(HKEY_CURRENT_USER, TestSettingsKey, 'UpdateFailedTag')
+    else RegDeleteValue(HKEY_CURRENT_USER, SettingsKey, 'UpdateFailedTag');
+  end;
 end;
 
 function InitializeUninstall: Boolean;
