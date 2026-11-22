@@ -1,0 +1,17 @@
+﻿<Project>
+  <PropertyGroup>
+    <_PokeRedSyncTagPattern>^v(20\d{2})\.((?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[a-z])$</_PokeRedSyncTagPattern>
+    <PokeRedSyncVersion Condition="'$(PokeRedSyncTag)' != '' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(PokeRedSyncTag)', '$(_PokeRedSyncTagPattern)'))">$([System.Text.RegularExpressions.Regex]::Match('$(PokeRedSyncTag)', '$(_PokeRedSyncTagPattern)').Groups[2].Value)</PokeRedSyncVersion>
+    <PokeRedSyncVersion Condition="'$(PokeRedSyncVersion)' == ''">開発版</PokeRedSyncVersion>
+    <InformationalVersion>$(PokeRedSyncVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PokeRedSyncTag)' != '' and '$(MSBuildProjectName)' == 'PokeRedSync'">
+    <AssemblyMetadata Include="PokeRedSyncTag" Value="$(PokeRedSyncTag)" />
+  </ItemGroup>
+  <Target Name="ValidatePokeRedSyncTag" BeforeTargets="PrepareForBuild" Condition="'$(PokeRedSyncTag)' != '' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(PokeRedSyncTag)', '$(_PokeRedSyncTagPattern)'))">
+    <Error Text="Invalid PokeRedSyncTag: $(PokeRedSyncTag)" />
+  </Target>
+</Project>

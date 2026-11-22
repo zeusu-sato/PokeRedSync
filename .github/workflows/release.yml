@@ -1,0 +1,136 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-2025
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check SDK and tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (dotnet --list-sdks | Where-Object { $_ -match '^8\.0\.' })) { Write-Host ("::error::" + 'The .NET 8 SDK is required'); throw 'The .NET 8 SDK is required' }
+          if ($env:RELEASE_TAG -cnotmatch '^v(20\d{2})\.((?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[a-z])$') { Write-Host ("::error::" + 'Invalid release tag'); throw 'Invalid release tag' }
+      - name: Restore, build and test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $properties = @("-p:PokeRedSyncTag=$env:RELEASE_TAG", '-p:ContinuousIntegrationBuild=true', '-p:DebugType=none')
+          dotnet restore tests/Tests.csproj @properties
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::" + 'Restore failed'); throw 'Restore failed' }
+          dotnet build tests/Tests.csproj -c Release --no-restore @properties
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::" + 'Build failed'); throw 'Build failed' }
+          dotnet test tests/Tests.csproj -c Release --no-build --no-restore @properties
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::" + 'Tests failed'); throw 'Tests failed' }
+      - name: Publish and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $properties = @("-p:PokeRedSyncTag=$env:RELEASE_TAG", '-p:ContinuousIntegrationBuild=true', '-p:DebugType=none')
+          dotnet publish PokeRedSync.csproj -c Release @properties -o artifacts/publish
+          if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+          New-Item -ItemType Directory -Force artifacts/package | Out-Null
+          Copy-Item artifacts/publish/PokeRedSync.exe, LICENSE artifacts/package/
+          $zip = "PokeRedSync-$env:RELEASE_TAG-win-x64.zip"
+          Compress-Archive -Path artifacts/package/* -DestinationPath "artifacts/$zip"
+          $hash = (Get-FileHash "artifacts/$zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          # Per-user installer built from the same two files. The zip stays the auto-update package.
+          $iscc = & ./installer/Get-InnoSetup.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'innosetup')
+          if (-not $iscc) { Write-Host ("::error::" + 'Inno Setup is not available'); throw 'Inno Setup is not available' }
+          if ($env:RELEASE_TAG -cnotmatch '^v(20\d{2})\.(\d{4})([a-z])$') { Write-Host ("::error::" + 'Invalid release tag'); throw 'Invalid release tag' }
+          $numericVersion = "$($Matches[1]).$($Matches[2]).$([int][char]$Matches[3] - [int][char]'a').0"
+          $version = $env:RELEASE_TAG.Split('.')[1]
+          & $iscc /Qp "/DTag=$env:RELEASE_TAG" "/DVersion=$version" "/DNumericVersion=$numericVersion" "/DPackageDir=$((Resolve-Path artifacts/package).Path)" "/O$((Resolve-Path artifacts).Path)" installer/PokeRedSync.iss
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::" + 'Installer build failed'); throw 'Installer build failed' }
+          $setup = "PokeRedSync-Setup-$env:RELEASE_TAG.exe"
+          if (-not (Test-Path "artifacts/$setup" -PathType Leaf)) { Write-Host ("::error::" + 'Installer not found'); throw 'Installer not found' }
+          $setupHash = (Get-FileHash "artifacts/$setup" -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/SHA256SUMS.txt'), "$hash  $zip`n$setupHash  $setup`n", [Text.UTF8Encoding]::new($false))
+      - name: Inspect package
+        shell: pwsh
+        env:
+          LEAK_WORDS: ${{ secrets.LEAK_WORDS }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "artifacts/PokeRedSync-$env:RELEASE_TAG-win-x64.zip"
+          Expand-Archive $zip artifacts/unpacked
+          [string[]]$names = @(Get-ChildItem artifacts/unpacked -Recurse -File | ForEach-Object { $_.Name })
+          [Array]::Sort($names, [StringComparer]::Ordinal)
+          if (($names -join ',') -cne 'LICENSE,PokeRedSync.exe') { Write-Host ("::error::Unexpected package contents: " + ($names -join ',')); throw 'Unexpected package contents' }
+          if (Get-ChildItem artifacts/unpacked -Directory) { Write-Host ("::error::" + 'Unexpected directory in package'); throw 'Unexpected directory in package' }
+          if (Get-ChildItem artifacts/unpacked -Recurse -Filter '*.pdb') { Write-Host ("::error::" + 'PDB in package'); throw 'PDB in package' }
+          $secretWords = @($env:LEAK_WORDS -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          if ($secretWords.Count -eq 0) { Write-Host ("::notice::" + 'LEAK_WORDS is not set; skipped the secret word check') }
+          $needles = @(('C:\' + 'Users\'), ('gh' + 'p_'), ('github_' + 'pat_'), ('one' + 'drive'), ('runner' + 'admin'), ('ze' + 'usu'), (('D:' + '\a\') + $env:REPOSITORY_NAME))
+          $paths = @(@{ Value = $env:GITHUB_WORKSPACE; Label = 'GITHUB_WORKSPACE' }, @{ Value = $env:USERPROFILE; Label = 'USERPROFILE' })
+          $setupName = "PokeRedSync-Setup-$env:RELEASE_TAG.exe"
+          $files = @('artifacts/publish/PokeRedSync.exe', 'artifacts/unpacked/PokeRedSync.exe', "artifacts/$setupName")
+          foreach ($file in $files) {
+            $bytes = [IO.File]::ReadAllBytes((Join-Path $PWD $file))
+            $texts = @([Text.Encoding]::GetEncoding(28591).GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes, 0, $bytes.Length - ($bytes.Length % 2)), [Text.Encoding]::Unicode.GetString($bytes, 1, $bytes.Length - 1 - (($bytes.Length - 1) % 2)))
+            foreach ($needle in $needles) {
+              if ([string]::IsNullOrWhiteSpace($needle)) { continue }
+              foreach ($value in $texts) {
+                # The public repository identifier is expected in update URLs.
+                if ($needle -eq ('ze' + 'usu')) { $value = $value.Replace((('ze' + 'usu') + '-sato/PokeRedSync/'), '').Replace((('ze' + 'usu') + '-sato/PokeRedSync.git'), '') }
+                if ($value.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { Write-Host ("::error::" + "Forbidden string $needle in $file"); throw "Forbidden string $needle in $file" }
+              }
+            }
+            foreach ($path in $paths) {
+              if ([string]::IsNullOrWhiteSpace($path.Value)) { continue }
+              foreach ($value in $texts) { if ($value.IndexOf($path.Value, [StringComparison]::OrdinalIgnoreCase) -ge 0) { Write-Host ("::error::" + "Forbidden string $($path.Label) in $file"); throw "Forbidden string $($path.Label) in $file" } }
+            }
+            for ($i = 0; $i -lt $secretWords.Count; $i++) {
+              foreach ($value in $texts) { if ($value.IndexOf($secretWords[$i], [StringComparison]::OrdinalIgnoreCase) -ge 0) { Write-Host ("::error::" + "Forbidden string LEAK_WORDS $($i + 1) in $file"); throw "Forbidden string LEAK_WORDS $($i + 1) in $file" } }
+            }
+          }
+          # Install and uninstall the setup on the disposable runner profile.
+          function Fail([string]$message) { Write-Host ("::error::" + $message); throw $message }
+          function WaitUntil([scriptblock]$condition) { $watch = [Diagnostics.Stopwatch]::StartNew(); while ($watch.Elapsed.TotalSeconds -lt 120) { if (& $condition) { return $true }; Start-Sleep -Milliseconds 500 }; return [bool](& $condition) }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\PokeRedSync'
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{BA8043DB-5310-40A6-B259-B146AC7DD6F5}_is1'
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'PokeRedSync.lnk'
+          $dataDir = Join-Path $env:LOCALAPPDATA 'PokeRedSync'
+          $keep = Join-Path $dataDir 'installer-check.txt'
+          New-Item -ItemType Directory -Force $dataDir | Out-Null
+          [IO.File]::WriteAllText($keep, 'keep')
+          $process = Start-Process -FilePath (Join-Path $PWD "artifacts/$setupName") -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { Fail "Setup failed: $($process.ExitCode)" }
+          [string[]]$installed = @(Get-ChildItem -LiteralPath $app -File | ForEach-Object { $_.Name })
+          [Array]::Sort($installed, [StringComparer]::Ordinal)
+          if (($installed -join ',') -cne 'LICENSE,PokeRedSync.exe,unins000.dat,unins000.exe') { Fail ("Unexpected installed files: " + ($installed -join ',')) }
+          if (Get-ChildItem -LiteralPath $app -Directory) { Fail 'Unexpected directory in installed folder' }
+          foreach ($name in 'LICENSE', 'PokeRedSync.exe') {
+            if ((Get-FileHash -LiteralPath (Join-Path $app $name) -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath "artifacts/package/$name" -Algorithm SHA256).Hash) { Fail "Installed $name differs from the package" }
+          }
+          $run = (Get-ItemProperty -LiteralPath $runKey -ErrorAction SilentlyContinue).PokeRedSync
+          if ($run -ne "`"$app\PokeRedSync.exe`"") { Fail "Unexpected Run value: $run" }
+          if (-not (Test-Path -LiteralPath $uninstallKey)) { Fail 'Uninstall entry not found' }
+          if (-not (Test-Path -LiteralPath $shortcut)) { Fail 'Start menu shortcut not found' }
+          $uninstaller = Join-Path $app 'unins000.exe'
+          $process = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { Fail "Uninstall failed: $($process.ExitCode)" }
+          if (-not (WaitUntil { -not (Test-Path -LiteralPath $uninstaller) -and -not (Test-Path -LiteralPath $uninstallKey) })) { Fail 'Uninstall did not finish' }
+          if ((Test-Path -LiteralPath $app) -and (Get-ChildItem -LiteralPath $app -Force)) { Fail 'Files left in installed folder' }
+          if (Test-Path -LiteralPath $shortcut) { Fail 'Start menu shortcut left' }
+          if ((Get-ItemProperty -LiteralPath $runKey -ErrorAction SilentlyContinue).PokeRedSync) { Fail 'Run value left' }
+          if (-not (Test-Path -LiteralPath $keep -PathType Leaf) -or [IO.File]::ReadAllText($keep) -cne 'keep') { Fail 'Uninstall removed user data' }
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:RELEASE_TAG.Split('.')[1]
+          gh release create $env:RELEASE_TAG "artifacts/PokeRedSync-$env:RELEASE_TAG-win-x64.zip" "artifacts/PokeRedSync-Setup-$env:RELEASE_TAG.exe" artifacts/SHA256SUMS.txt --title "PokeRedSync $version" --generate-notes
+          if ($LASTEXITCODE -ne 0) { Write-Host ("::error::" + 'Release creation failed'); throw 'Release creation failed' }
