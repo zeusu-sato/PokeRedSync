@@ -86,7 +86,8 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             string? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
             string displayName = AppVersion.DisplayName(version);
-            using var menu = new ContextMenuStrip(); using var icon = new NotifyIcon { Icon = SystemIcons.Application, Text = displayName, ContextMenuStrip = menu, Visible = true };
+            using var trayIcon = PalmIcon.Find(root);
+            using var menu = new ContextMenuStrip(); using var icon = new NotifyIcon { Icon = trayIcon ?? SystemIcons.Application, Text = displayName, ContextMenuStrip = menu, Visible = true };
             menu.Items.Add(new ToolStripMenuItem(displayName) { Enabled = false });
             menu.Items.Add(new ToolStripSeparator());
             using var timer = new System.Windows.Forms.Timer { Interval = 3000 };
