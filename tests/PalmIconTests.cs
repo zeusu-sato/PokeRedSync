@@ -56,16 +56,54 @@ public class PalmIconTests
         Assert.Equal(Color.Black.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
         Assert.Equal(Color.White.ToArgb(), bitmap.GetPixel(1, 0).ToArgb());
     }
-    [Fact] public void CentersAndPreservesTransparencyInSquareIcon()
+    [Theory] [InlineData(16)] [InlineData(20)] [InlineData(24)] [InlineData(32)]
+    public void CropsTransparentMarginsAndUsesRequestedSize(int size)
     {
-        using var source = new Bitmap(4, 2);
-        source.SetPixel(0, 0, Color.Red);
-        using var icon = PalmIcon.MakeIcon(source, 8);
+        using var source = new Bitmap(12, 10);
+        for (int y = 3; y < 7; y++) for (int x = 5; x < 7; x++) source.SetPixel(x, y, Color.Red);
+        using var icon = PalmIcon.MakeIcon(source, size);
         using var result = icon.ToBitmap();
-        Assert.Equal(0, result.GetPixel(0, 0).A);
-        Assert.Equal(Color.Red.ToArgb(), result.GetPixel(0, 2).ToArgb());
-        Assert.Equal(Color.Red.ToArgb(), result.GetPixel(1, 3).ToArgb());
-        Assert.Equal(0, result.GetPixel(2, 2).A);
+        Assert.Equal(size, result.Width); Assert.Equal(size, result.Height);
+        Assert.Equal(0, result.GetPixel(0, size / 2).A);
+        Assert.Equal(Color.Red.ToArgb(), result.GetPixel(size / 2, size / 2).ToArgb());
+        Assert.NotEqual(0, result.GetPixel(size / 2, 0).A);
+        Assert.NotEqual(0, result.GetPixel(size / 2, size - 1).A);
+    }
+    [Fact] public void EmptyBitmapStaysTransparent()
+    {
+        using var source = new Bitmap(4, 3);
+        using var icon = PalmIcon.MakeIcon(source, 16);
+        using var result = icon.ToBitmap();
+        Assert.Equal(0, result.GetPixel(8, 8).A);
+    }
+    [Fact] public void RemovesBlueShadowBeforeCropping()
+    {
+        using var source = new Bitmap(10, 10);
+        for (int y = 1; y < 6; y++) for (int x = 3; x < 7; x++) source.SetPixel(x, y, Color.Pink);
+        for (int x = 1; x < 9; x++) source.SetPixel(x, 8, Color.Blue);
+        using var icon = PalmIcon.MakeIcon(source, 20);
+        using var result = icon.ToBitmap();
+        Assert.Equal(Color.Pink.ToArgb(), result.GetPixel(10, 19).ToArgb());
+        for (int y = 0; y < 20; y++) for (int x = 0; x < 20; x++) Assert.NotEqual(Color.Blue.ToArgb(), result.GetPixel(x, y).ToArgb());
+    }
+    [Fact] public void KeepsOriginalWhenTooFewPixelsRemain()
+    {
+        using var source = new Bitmap(10, 10);
+        for (int y = 0; y < 10; y++) for (int x = 0; x < 10; x++) source.SetPixel(x, y, Color.Blue);
+        source.SetPixel(5, 5, Color.Pink);
+        using var icon = PalmIcon.MakeIcon(source, 20);
+        using var result = icon.ToBitmap();
+        Assert.Equal(Color.Blue.ToArgb(), result.GetPixel(0, 0).ToArgb());
+        Assert.Equal(Color.Pink.ToArgb(), result.GetPixel(10, 10).ToArgb());
+    }
+    [Fact] public void DownscalingRetainsVisiblePixels()
+    {
+        using var source = new Bitmap(64, 64);
+        for (int y = 12; y < 52; y++) for (int x = 20; x < 44; x++) source.SetPixel(x, y, Color.Blue);
+        using var icon = PalmIcon.MakeIcon(source, 16);
+        using var result = icon.ToBitmap();
+        Assert.True(result.GetPixel(8, 8).B > 200);
+        Assert.Equal(0, result.GetPixel(0, 8).A);
     }
     [Fact] public void MissingAndCorruptFilesReturnNoIcon()
     {

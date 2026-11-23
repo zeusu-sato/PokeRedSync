@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
 namespace PokeRedSync;
@@ -122,8 +123,30 @@ public static class PalmIcon
     public static Icon MakeIcon(Bitmap bitmap, int size)
     {
         using var square = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-        int width = Math.Max(1, bitmap.Width * size / Math.Max(bitmap.Width, bitmap.Height)), height = Math.Max(1, bitmap.Height * size / Math.Max(bitmap.Width, bitmap.Height));
-        for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) square.SetPixel((size - width) / 2 + x, (size - height) / 2 + y, bitmap.GetPixel(x * bitmap.Width / width, y * bitmap.Height / height));
+        using var filtered = new Bitmap(bitmap);
+        int visible = 0, remaining = 0;
+        for (int y = 0; y < bitmap.Height; y++) for (int x = 0; x < bitmap.Width; x++)
+        {
+            Color color = bitmap.GetPixel(x, y);
+            if (color.A == 0) continue;
+            visible++;
+            if (color.GetHue() >= 180 && color.GetHue() <= 260 && color.GetSaturation() >= 0.25f)
+                filtered.SetPixel(x, y, Color.Transparent);
+            else remaining++;
+        }
+        Bitmap source = remaining * 10L >= visible ? filtered : bitmap;
+        int left = bitmap.Width, top = bitmap.Height, right = -1, bottom = -1;
+        for (int y = 0; y < bitmap.Height; y++) for (int x = 0; x < bitmap.Width; x++)
+            if (source.GetPixel(x, y).A != 0) { left = Math.Min(left, x); top = Math.Min(top, y); right = Math.Max(right, x); bottom = Math.Max(bottom, y); }
+        if (right >= left)
+        {
+            int sourceWidth = right - left + 1, sourceHeight = bottom - top + 1, longest = Math.Max(sourceWidth, sourceHeight);
+            int width = Math.Max(1, (int)Math.Round((double)sourceWidth * size / longest)), height = Math.Max(1, (int)Math.Round((double)sourceHeight * size / longest));
+            using var graphics = Graphics.FromImage(square);
+            graphics.InterpolationMode = longest <= size ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.Half;
+            graphics.DrawImage(source, new Rectangle((size - width) / 2, (size - height) / 2, width, height), left, top, sourceWidth, sourceHeight, GraphicsUnit.Pixel);
+        }
         IntPtr handle = square.GetHicon();
         try { using Icon temp = Icon.FromHandle(handle); return (Icon)temp.Clone(); }
         finally { DestroyIcon(handle); }
