@@ -17,6 +17,25 @@ public sealed record Bundle(uint Device, uint Hash, Dictionary<uint, uint> Vecto
         return new(Pdb.U32(b, 8), Pdb.U32(b, 12), vector, tombstones, result);
     }
     static bool Valid(byte[] b, int kind) => b.Length >= 20 && b.Length <= 32768 && b.AsSpan(0, 4).SequenceEqual("PkRS"u8) && Pdb.U16(b, 4) == 1 && Pdb.U16(b, 6) == kind && Pdb.U32(b, 12) == b.Length - 20 && Pdb.U32(b, 16) == Pdb.Crc(b, 16);
+    // Records are in receive order: sync information followed by save slots 0 to 3.
+    public byte[]? DisplayRecord() => DisplayRecord(Records.Skip(1).ToArray());
+    public static byte[]? DisplayRecord(byte[][] records)
+    {
+        byte[]? best = null;
+        uint highest = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            if (i >= records.Length) break;
+            byte[] record = records[i];
+            if (Valid(record, i < 2 ? 0 : 1))
+            {
+                uint sequence = Pdb.U32(record, 8);
+                if (i == 2) return record;
+                if (best == null || sequence > highest) { best = record; highest = sequence; }
+            }
+        }
+        return best;
+    }
     public bool LessOrEqual(Bundle other) => Vector.All(x => x.Value <= other.Vector.GetValueOrDefault(x.Key));
 }
 
@@ -32,6 +51,11 @@ public static class Selection
         byte[] header = new byte[12]; "PkRV"u8.CopyTo(header); Pdb.Put16(header, 4, 1); Pdb.Put16(header, 6, (ushort)bundles.Count); Pdb.Put32(header, 8, Pdb.Crc(header.AsSpan(0, 8)));
         return Pdb.Write("PokeRedRecv-PkRd", "recv", new[] { header }.Concat(bundles.SelectMany(b => b.Records)).ToArray());
     }
+}
+
+public static class Delivery
+{
+    public static List<Bundle> Plan(IReadOnlyList<Bundle> sources, Bundle? target) => Selection.Choose(sources, target);
 }
 
 

@@ -34,7 +34,7 @@ internal static class Program
             foreach (string user in users)
             {
                 Bundle? own = snapshots[user];
-                var selected = Selection.Choose(all, own);
+                var selected = Delivery.Plan(all, own);
                 string install = Path.Combine(user, "Install"), path = Path.Combine(install, ReceiveName);
                 if (selected.Count == 0)
                 {
@@ -66,17 +66,18 @@ internal static class Program
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log(e.Message); return false; }
     }
-    static bool IsOurs(byte[] b) => b.Length >= 78 && Pdb.U32(b, 48) == 0x50525359 && System.Text.Encoding.ASCII.GetString(b, 0, 32).TrimEnd('\0') == "PokeRedRecv-PkRd" && System.Text.Encoding.ASCII.GetString(b, 60, 8) == "recvPkRd";
+    internal static bool IsOurs(byte[] b) => b.Length >= 78 && Pdb.U32(b, 48) == 0x50525359 && System.Text.Encoding.ASCII.GetString(b, 0, 32).TrimEnd('\0') == "PokeRedRecv-PkRd" && System.Text.Encoding.ASCII.GetString(b, 60, 8) == "recvPkRd";
     [STAThread]
     static int Main(string[] args)
     {
         try
         {
-            if (args.Contains("--help")) { Console.WriteLine("PokeRedSync [--root folder] [--log file] [--once]\nPokeRedSync --make-backup fixtures-folder output.pdb\nWithout --once, runs in the notification area."); return 0; }
+            if (args.Contains("--help")) { Console.WriteLine("PokeRedSync [--root folder] [--log file] [--once | --show-saves]\nPokeRedSync --make-backup fixtures-folder output.pdb\nWithout --once or --show-saves, runs in the notification area."); return 0; }
             if (args.Length == 3 && args[0] == "--make-backup") { var records = Enumerable.Range(0, 5).Select(i => File.ReadAllBytes(Path.Combine(args[1], $"rec{i}.bin"))).ToArray(); File.WriteAllBytes(args[2], Pdb.Write("PokeRedSave-PkRd", "save", records, 8)); return 0; }
-            string? root = null; bool once = false;
-            for (int i = 0; i < args.Length; i++) { if (args[i] == "--once") once = true; else if (args[i] == "--root" && i + 1 < args.Length) root = args[++i]; else if (args[i] == "--log" && i + 1 < args.Length) log = args[++i]; else throw new ArgumentException("Invalid arguments; use --help."); }
+            string? root = null; bool once = false, showSaves = false;
+            for (int i = 0; i < args.Length; i++) { if (args[i] == "--once") once = true; else if (args[i] == "--show-saves") showSaves = true; else if (args[i] == "--root" && i + 1 < args.Length) root = args[++i]; else if (args[i] == "--log" && i + 1 < args.Length) log = args[++i]; else throw new ArgumentException("Invalid arguments; use --help."); }
             root ??= DefaultRoot();
+            if (showSaves) { ApplicationConfiguration.Initialize(); using var saveIcon = PalmIcon.Find(root); Application.Run(new SaveListForm(root, saveIcon ?? SystemIcons.Application)); return 0; }
             if (once) return Run(root) ? 0 : 1;
             var mutex = new TrayLock(@"Local\PokeRedSync.Tray");
             if (!mutex.TryAcquire(UpdateHandover.ReadUpdatedFrom() is not null ? TimeSpan.FromSeconds(30) : TimeSpan.Zero)) { mutex.Dispose(); Log("既に起動しているため終了します"); return 0; }
@@ -102,6 +103,16 @@ internal static class Program
             bool Process() { syncing = true; try { return Run(root); } finally { syncing = false; } }
             timer.Tick += (_, _) => { timer.Stop(); if (!Process()) timer.Start(); };
             menu.Items.Add("今すぐ処理", null, (_, _) => { timer.Stop(); if (!Process()) timer.Start(); });
+            SaveListForm? saveList = null;
+            menu.Items.Add("セーブの一覧", null, (_, _) =>
+            {
+                if (saveList is null || saveList.IsDisposed)
+                {
+                    saveList = new SaveListForm(root, trayIcon ?? SystemIcons.Application);
+                    saveList.Show();
+                }
+                else { saveList.Reload(); if (saveList.WindowState == FormWindowState.Minimized) saveList.WindowState = FormWindowState.Normal; saveList.Activate(); }
+            });
             var check = new ToolStripMenuItem("更新を確認");
             var auto = new ToolStripMenuItem("自動更新") { CheckOnClick = true, Checked = enabled };
             menu.Items.Add(check); menu.Items.Add(auto); menu.Items.Add(new ToolStripSeparator());
